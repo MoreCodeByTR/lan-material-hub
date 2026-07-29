@@ -2,19 +2,22 @@
 
 一个只跑在本机和局域网内的小工具，用来在手机、PC、测试机之间传递截图、视频、文本、日志、HAR、压缩包等开发素材。
 
+- npm: https://www.npmjs.com/package/lan-material-hub
+- GitHub: [MoreCodeByTR/lan-material-hub](https://github.com/MoreCodeByTR/lan-material-hub)
+
 ## 预览
 
 ### 桌面端
 
-<img src="docs/images/desktop-home.png" alt="桌面端首页" width="900" />
+<img src="https://raw.githubusercontent.com/MoreCodeByTR/lan-material-hub/main/docs/images/desktop-home.png" alt="桌面端首页" width="900" />
 
 ### 移动端
 
-<img src="docs/images/mobile-home.jpg" alt="移动端首页" width="360" />
+<img src="https://raw.githubusercontent.com/MoreCodeByTR/lan-material-hub/main/docs/images/mobile-home.jpg" alt="移动端首页" width="260" />
 
 ### 连接信息
 
-<img src="docs/images/connection-info.png" alt="连接信息" width="900" />
+<img src="https://raw.githubusercontent.com/MoreCodeByTR/lan-material-hub/main/docs/images/connection-info.png" alt="连接信息" width="900" />
 
 ## 启动
 
