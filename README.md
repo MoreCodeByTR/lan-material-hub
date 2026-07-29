@@ -6,15 +6,15 @@
 
 ### 桌面端
 
-![桌面端首页](docs/images/desktop-home.png)
+<img src="docs/images/desktop-home.png" alt="桌面端首页" width="900" />
 
 ### 移动端
 
-![移动端首页](docs/images/mobile-home.jpg)
+<img src="docs/images/mobile-home.jpg" alt="移动端首页" width="360" />
 
 ### 连接信息
 
-![连接信息](docs/images/connection-info.png)
+<img src="docs/images/connection-info.png" alt="连接信息" width="900" />
 
 ## 启动
 
