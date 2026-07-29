@@ -1,0 +1,47 @@
+{
+  "name": "lan-material-hub",
+  "version": "1.0.0",
+  "description": "A LAN-only material dropbox for files, videos, screenshots, text, and capture assets.",
+  "main": "server.js",
+  "bin": {
+    "lan-material-hub": "bin/lan-material-hub.js"
+  },
+  "scripts": {
+    "build": "vite build",
+    "dev": "node scripts/dev.js",
+    "prepack": "npm run build",
+    "serve": "node server.js",
+    "start": "node bin/lan-material-hub.js start",
+    "stop": "node bin/lan-material-hub.js stop",
+    "status": "node bin/lan-material-hub.js status"
+  },
+  "keywords": [
+    "lan",
+    "upload",
+    "material",
+    "handoff"
+  ],
+  "author": "",
+  "license": "MIT",
+  "files": [
+    "bin/",
+    "dist/",
+    "server.js",
+    "README.md"
+  ],
+  "dependencies": {
+    "@ant-design/icons": "^6.3.2",
+    "antd": "^6.5.2",
+    "express": "^4.19.2",
+    "mime-types": "^2.1.35",
+    "multer": "^2.2.0",
+    "qrcode": "^1.5.4",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "ws": "^8.18.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.3.4",
+    "vite": "^5.4.21"
+  }
+}
