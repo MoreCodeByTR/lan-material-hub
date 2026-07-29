@@ -16,7 +16,7 @@ function usage() {
   console.log(`LAN Material Hub
 
 Usage:
-  lan-material-hub start [--nickname <name>]
+  lan-material-hub start
   lan-material-hub stop
   lan-material-hub status
 
@@ -98,27 +98,7 @@ async function waitForStartupLines(offset, timeout = 5000) {
   return lines;
 }
 
-function parseStartOptions(args) {
-  const options = {};
-
-  for (let index = 0; index < args.length; index += 1) {
-    const arg = args[index];
-    if (arg === '--nickname' || arg === '--name' || arg === '--site-name' || arg === '-n') {
-      options.nickname = args[index + 1] || '';
-      index += 1;
-    } else if (arg.startsWith('--nickname=')) {
-      options.nickname = arg.slice('--nickname='.length);
-    } else if (arg.startsWith('--name=')) {
-      options.nickname = arg.slice('--name='.length);
-    } else if (arg.startsWith('--site-name=')) {
-      options.nickname = arg.slice('--site-name='.length);
-    }
-  }
-
-  return options;
-}
-
-async function start(options = {}) {
+async function start() {
   await fsp.mkdir(HOME_DIR, { recursive: true });
 
   const previous = readPidInfo();
@@ -138,7 +118,6 @@ async function start(options = {}) {
     env: {
       ...process.env,
       LAN_MATERIAL_HUB_MANAGED: '1',
-      LAN_MATERIAL_HUB_NICKNAME: options.nickname || process.env.LAN_MATERIAL_HUB_NICKNAME || '',
     },
     stdio: ['ignore', out, out],
   });
@@ -204,7 +183,11 @@ async function main() {
   const args = process.argv.slice(3);
 
   if (command === 'start') {
-    await start(parseStartOptions(args));
+    if (args.length > 0) {
+      usage();
+      process.exit(1);
+    }
+    await start();
   } else if (command === 'stop') {
     await stop();
   } else if (command === 'status') {

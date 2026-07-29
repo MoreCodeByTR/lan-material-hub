@@ -25,6 +25,7 @@
   "license": "MIT",
   "files": [
     "bin/",
+    "docs/images/",
     "dist/",
     "server.js",
     "README.md"

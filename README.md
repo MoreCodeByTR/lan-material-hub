@@ -2,6 +2,20 @@
 
 一个只跑在本机和局域网内的小工具，用来在手机、PC、测试机之间传递截图、视频、文本、日志、HAR、压缩包等开发素材。
 
+## 预览
+
+### 桌面端
+
+![桌面端首页](docs/images/desktop-home.png)
+
+### 移动端
+
+![移动端首页](docs/images/mobile-home.jpg)
+
+### 连接信息
+
+![连接信息](docs/images/connection-info.png)
+
 ## 启动
 
 ```bash
@@ -47,7 +61,7 @@ PORT_RETRY_LIMIT=50 npm start
 DATA_DIR=/Users/tianrui/Desktop/material-data npm start
 MAX_FILE_SIZE=2147483648 npm start
 LAN_MATERIAL_HUB_HOME=/tmp/lan-material-hub npm start
-npm start -- --nickname "办公 Mac"
+LAN_MATERIAL_HUB_NICKNAME="办公 Mac" npm start
 ```
 
 - `PORT`: 起始服务端口，默认 `7788`
@@ -55,7 +69,7 @@ npm start -- --nickname "办公 Mac"
 - `DATA_DIR`: 素材保存目录，默认项目内 `data/`
 - `MAX_FILE_SIZE`: 单文件大小上限，默认 1 GB
 - `LAN_MATERIAL_HUB_HOME`: 后台模式 PID 和日志目录，默认 `~/.lan-material-hub`
-- `LAN_MATERIAL_HUB_NICKNAME`: 站点昵称，也可以用 `npm start -- --nickname "办公 Mac"` 设置
+- `LAN_MATERIAL_HUB_NICKNAME`: 站点昵称
 
 ## 能力
 
