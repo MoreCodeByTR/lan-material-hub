@@ -154,6 +154,48 @@ function publicLinkedDevices() {
     .map((device) => ({ ...device }));
 }
 
+function parseByteRange(rangeHeader, size) {
+  if (!rangeHeader) return null;
+
+  const match = /^bytes=(\d*)-(\d*)$/.exec(String(rangeHeader).trim());
+  if (!match) return { invalid: true };
+
+  const [, startText, endText] = match;
+  if (!startText && !endText) return { invalid: true };
+
+  let start;
+  let end;
+
+  if (!startText) {
+    const suffixLength = Number(endText);
+    if (!Number.isSafeInteger(suffixLength) || suffixLength <= 0) return { invalid: true };
+    start = Math.max(size - suffixLength, 0);
+    end = size - 1;
+  } else {
+    start = Number(startText);
+    end = endText ? Number(endText) : size - 1;
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end)) return { invalid: true };
+    if (start < 0 || end < 0 || start > end || start >= size) return { invalid: true };
+    end = Math.min(end, size - 1);
+  }
+
+  return { start, end };
+}
+
+function pipeFile(filePath, res, options) {
+  fs.createReadStream(filePath, options)
+    .on('error', (error) => {
+      if (res.headersSent) {
+        res.destroy(error);
+        return;
+      }
+      res.status(error.code === 'ENOENT' ? 404 : 500).json({
+        error: error.code === 'ENOENT' ? '文件不存在' : error.message,
+      });
+    })
+    .pipe(res);
+}
+
 async function ensureStorage() {
   await fsp.mkdir(UPLOAD_DIR, { recursive: true });
   try {
@@ -426,7 +468,7 @@ app.post('/api/items', upload.array('files', 50), async (req, res, next) => {
   }
 });
 
-app.get('/api/items/:id/raw', (req, res) => {
+app.get('/api/items/:id/raw', async (req, res, next) => {
   const item = findItem(req.params.id);
   if (!item) {
     res.status(404).json({ error: '素材不存在' });
@@ -439,11 +481,40 @@ app.get('/api/items/:id/raw', (req, res) => {
   }
 
   const filePath = path.join(UPLOAD_DIR, item.storedName);
-  res.type(item.mime || mime.lookup(item.fileName) || 'application/octet-stream');
-  res.setHeader('Content-Disposition', `inline; filename*=UTF-8''${encodeURIComponent(item.fileName)}`);
-  fs.createReadStream(filePath).on('error', () => {
-    if (!res.headersSent) res.status(404).json({ error: '文件不存在' });
-  }).pipe(res);
+  try {
+    const stat = await fsp.stat(filePath);
+    const contentType = item.mime || mime.lookup(item.fileName) || 'application/octet-stream';
+    const disposition = `inline; filename*=UTF-8''${encodeURIComponent(item.fileName)}`;
+    const range = parseByteRange(req.headers.range, stat.size);
+
+    res.type(contentType);
+    res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Content-Disposition', disposition);
+
+    if (range?.invalid) {
+      res.setHeader('Content-Range', `bytes */${stat.size}`);
+      res.status(416).end();
+      return;
+    }
+
+    if (range) {
+      const chunkSize = range.end - range.start + 1;
+      res.status(206);
+      res.setHeader('Content-Range', `bytes ${range.start}-${range.end}/${stat.size}`);
+      res.setHeader('Content-Length', chunkSize);
+      pipeFile(filePath, res, { start: range.start, end: range.end });
+      return;
+    }
+
+    res.setHeader('Content-Length', stat.size);
+    pipeFile(filePath, res);
+  } catch (error) {
+    if (error.code === 'ENOENT') {
+      res.status(404).json({ error: '文件不存在' });
+      return;
+    }
+    next(error);
+  }
 });
 
 app.get('/api/items/:id/download', (req, res) => {
