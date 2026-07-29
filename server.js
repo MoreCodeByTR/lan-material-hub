@@ -15,7 +15,15 @@ const packageJson = require('./package.json');
 const ROOT_DIR = __dirname;
 const PUBLIC_DIR = path.join(ROOT_DIR, 'public');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
-const DATA_DIR = path.resolve(process.env.DATA_DIR || path.join(ROOT_DIR, 'data'));
+const LEGACY_DATA_DIR = path.join(ROOT_DIR, 'data');
+const APP_HOME_DIR = path.resolve(
+  process.env.LAN_MATERIAL_HUB_HOME || path.join(os.homedir(), '.lan-material-hub'),
+);
+const USE_MANAGED_HOME = process.env.LAN_MATERIAL_HUB_MANAGED === '1';
+const DEFAULT_DATA_DIR = USE_MANAGED_HOME
+  ? path.join(APP_HOME_DIR, 'data')
+  : LEGACY_DATA_DIR;
+const DATA_DIR = path.resolve(process.env.DATA_DIR || DEFAULT_DATA_DIR);
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const META_FILE = path.join(DATA_DIR, 'items.json');
 const START_PORT = readPort(process.env.PORT, 7788);
@@ -197,6 +205,7 @@ function pipeFile(filePath, res, options) {
 }
 
 async function ensureStorage() {
+  await migrateLegacyManagedData();
   await fsp.mkdir(UPLOAD_DIR, { recursive: true });
   try {
     const content = await fsp.readFile(META_FILE, 'utf8');
@@ -209,6 +218,20 @@ async function ensureStorage() {
     items = [];
     await saveItems();
   }
+}
+
+async function migrateLegacyManagedData() {
+  if (process.env.DATA_DIR || !USE_MANAGED_HOME || DATA_DIR === LEGACY_DATA_DIR) return;
+
+  const [targetExists, legacyExists] = await Promise.all([
+    fsp.access(DATA_DIR).then(() => true, () => false),
+    fsp.access(LEGACY_DATA_DIR).then(() => true, () => false),
+  ]);
+  if (targetExists || !legacyExists) return;
+
+  await fsp.mkdir(path.dirname(DATA_DIR), { recursive: true });
+  await fsp.cp(LEGACY_DATA_DIR, DATA_DIR, { recursive: true });
+  console.log(`Migrated data directory: ${LEGACY_DATA_DIR} -> ${DATA_DIR}`);
 }
 
 async function saveItems() {

@@ -35,6 +35,8 @@ lan-material-hub status
 lan-material-hub stop
 ```
 
+通过 `lan-material-hub start` 启动时，素材默认保存在 `~/.lan-material-hub/data`，更新 npm 包不会清除这里的数据。
+
 想给当前设备设置一个容易识别的名字，可以这样启动：
 
 ```bash

@@ -5,12 +5,127 @@ const fsp = require('fs/promises');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const packageJson = require('../package.json');
 
 const ROOT_DIR = path.resolve(__dirname, '..');
 const SERVER_ENTRY = path.join(ROOT_DIR, 'server.js');
 const HOME_DIR = path.resolve(process.env.LAN_MATERIAL_HUB_HOME || path.join(os.homedir(), '.lan-material-hub'));
 const PID_FILE = path.resolve(process.env.LAN_MATERIAL_HUB_PID_FILE || path.join(HOME_DIR, 'lan-material-hub.pid'));
 const LOG_FILE = path.resolve(process.env.LAN_MATERIAL_HUB_LOG_FILE || path.join(HOME_DIR, 'lan-material-hub.log'));
+const COLORS_ENABLED = !process.env.NO_COLOR && (process.stdout.isTTY || process.env.FORCE_COLOR);
+const COLOR = {
+  reset: '\x1b[0m',
+  bold: '\x1b[1m',
+  gray: '\x1b[90m',
+  green: '\x1b[32m',
+  cyan: '\x1b[36m',
+  yellow: '\x1b[33m',
+  red: '\x1b[31m',
+};
+
+function color(name, text) {
+  if (!COLORS_ENABLED) return text;
+  return `${COLOR[name] || ''}${text}${COLOR.reset}`;
+}
+
+function infoLabel() {
+  return color('green', '[i]');
+}
+
+function warnLabel() {
+  return color('yellow', '[!]');
+}
+
+function errorLabel() {
+  return color('red', '[x]');
+}
+
+function commandLabel() {
+  return `${color('green', '›')} ${color('green', 'lan-material-hub start')}`;
+}
+
+function isLocalUrl(value) {
+  try {
+    const url = new URL(value);
+    return url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '::1';
+  } catch (_error) {
+    return false;
+  }
+}
+
+function startupSummary(lines) {
+  const summary = {
+    dataDir: '',
+    failed: '',
+    migrated: '',
+    nickname: '',
+    portSwitch: '',
+    urls: [],
+    warnings: [],
+    other: [],
+  };
+
+  for (const line of lines) {
+    if (line.startsWith('LAN Material Hub is running:')) {
+      summary.nickname = line.slice('LAN Material Hub is running:'.length).trim();
+    } else if (line.startsWith('- ')) {
+      summary.urls.push(line.slice(2).trim());
+    } else if (line.startsWith('Data directory:')) {
+      summary.dataDir = line.slice('Data directory:'.length).trim();
+    } else if (line.startsWith('Requested port ')) {
+      summary.portSwitch = line;
+    } else if (line.startsWith('Migrated data directory:')) {
+      summary.migrated = line.slice('Migrated data directory:'.length).trim();
+    } else if (line.startsWith('Port ') || line.startsWith('Failed to start:')) {
+      if (line.startsWith('Failed to start:')) summary.failed = line;
+      else summary.warnings.push(line);
+    } else {
+      summary.other.push(line);
+    }
+  }
+
+  return summary;
+}
+
+function printStartupOutput(pid, lines) {
+  const summary = startupSummary(lines);
+  const version = packageJson.version ? `@${packageJson.version}` : '';
+
+  console.log(`${color('gray', 'Log file:')} ${LOG_FILE}`);
+  console.log(commandLabel());
+
+  if (summary.failed) {
+    console.log(`${errorLabel()} ${color('red', summary.failed)}`);
+    return;
+  }
+
+  console.log(`${infoLabel()} ${color('green', `LAN Material Hub${version} started`)} ${color('gray', `(pid ${pid})`)}`);
+  if (summary.nickname) {
+    console.log(`${infoLabel()} Site: ${color('bold', summary.nickname)}`);
+  }
+  if (summary.portSwitch) {
+    console.log(`${warnLabel()} ${color('yellow', summary.portSwitch)}`);
+  }
+  for (const warning of summary.warnings) {
+    console.log(`${warnLabel()} ${color('yellow', warning)}`);
+  }
+  if (summary.migrated) {
+    console.log(`${infoLabel()} Data migrated: ${summary.migrated}`);
+  }
+  if (summary.urls.length > 0) {
+    console.log(`${infoLabel()} Use your device to visit:`);
+    for (const url of summary.urls) {
+      console.log(`    ${color(isLocalUrl(url) ? 'cyan' : 'green', url)}`);
+    }
+    console.log(`${warnLabel()} If mobile devices cannot open the network URL, check Wi-Fi and firewall settings.`);
+  }
+  if (summary.dataDir) {
+    console.log(`${infoLabel()} Data directory: ${summary.dataDir}`);
+  }
+  for (const line of summary.other) {
+    console.log(`${infoLabel()} ${line}`);
+  }
+}
 
 function usage() {
   console.log(`LAN Material Hub
@@ -26,7 +141,7 @@ Environment:
   HOST                  监听地址，默认 0.0.0.0
   DATA_DIR              素材保存目录
   LAN_MATERIAL_HUB_NICKNAME 站点昵称
-  LAN_MATERIAL_HUB_HOME PID 和日志目录`);
+  LAN_MATERIAL_HUB_HOME PID、日志和默认素材目录`);
 }
 
 function readPidInfo() {
@@ -112,13 +227,16 @@ async function start() {
 
   const logOffset = await fileSize(LOG_FILE);
   const out = fs.openSync(LOG_FILE, 'a');
+  const childEnv = {
+    ...process.env,
+    LAN_MATERIAL_HUB_MANAGED: '1',
+  };
+  delete childEnv.FORCE_COLOR;
+
   const child = spawn(process.execPath, [SERVER_ENTRY], {
     cwd: ROOT_DIR,
     detached: true,
-    env: {
-      ...process.env,
-      LAN_MATERIAL_HUB_MANAGED: '1',
-    },
+    env: childEnv,
     stdio: ['ignore', out, out],
   });
 
@@ -130,10 +248,8 @@ async function start() {
     logFile: LOG_FILE,
   }, null, 2));
 
-  console.log(`LAN Material Hub started, pid ${child.pid}`);
   const startupLines = await waitForStartupLines(logOffset);
-  for (const line of startupLines) console.log(line);
-  console.log(`Log file: ${LOG_FILE}`);
+  printStartupOutput(child.pid, startupLines);
 }
 
 async function stop() {
