@@ -21,6 +21,7 @@ import {
 import {
   AudioOutlined,
   CopyOutlined,
+  CustomerServiceOutlined,
   DeleteOutlined,
   DesktopOutlined,
   DownloadOutlined,
@@ -44,6 +45,8 @@ const TYPE_OPTIONS = [
   { label: '文件', value: 'file' },
   { label: '文本', value: 'text' },
 ];
+
+const CUSTOMER_SERVICE_URL = 'lark://applink.feishu.cn/client/chat/open?openId=ou_4be3fc9e005419a4b85c8e8c5209f88a';
 
 function formatBytes(bytes) {
   if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
@@ -487,11 +490,11 @@ export default function MaterialHubApp() {
             {socketState.label}
           </button>
           <Button
-            disabled={!selectedUrl}
-            icon={<CopyOutlined />}
-            onClick={() => copyText(selectedUrl, '入口地址已复制')}
+            className="customer-service-link"
+            href={CUSTOMER_SERVICE_URL}
+            icon={<CustomerServiceOutlined />}
           >
-            复制入口地址
+            技术支持
           </Button>
         </Space>
       </header>

@@ -474,22 +474,55 @@ a {
   }
 
   .topbar {
-    display: grid;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .brand {
+    flex: 1 1 auto;
+    gap: 10px;
+  }
+
+  .brand > div {
+    min-width: 0;
+  }
+
+  .brand-mark {
+    width: 38px;
+    height: 38px;
+  }
+
+  .kicker {
+    display: none;
+  }
+
+  .topbar h1.ant-typography {
+    max-width: 100%;
+    overflow: hidden;
+    font-size: 22px;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .status-strip {
-    align-items: stretch;
-    justify-content: stretch;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: flex-end;
   }
 
   .status-strip .ant-space-item,
   .status-strip .ant-btn {
-    width: 100%;
+    width: auto;
+  }
+
+  .status-strip .ant-space-item:has(.customer-service-link) {
+    display: none;
   }
 
   .socket-state {
     justify-content: center;
-    width: 100%;
+    width: auto;
+    white-space: nowrap;
   }
 
   .workspace,
