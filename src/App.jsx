@@ -66,10 +66,6 @@ function formatTime(value) {
   }).format(date);
 }
 
-function absoluteUrl(path) {
-  return new URL(path, window.location.origin).toString();
-}
-
 function isImageItem(item) {
   return item.type !== 'text' && (item.mime || '').startsWith('image/');
 }
@@ -94,6 +90,44 @@ function getUploadFile(uploadFile) {
   if (uploadFile?.originFileObj instanceof File) return uploadFile.originFileObj;
   if (uploadFile instanceof File) return uploadFile;
   return null;
+}
+
+function loadBlobImage(objectUrl) {
+  return new Promise((resolve, reject) => {
+    const image = new window.Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error('图片读取失败'));
+    image.src = objectUrl;
+  });
+}
+
+function canvasToPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    canvas.toBlob((blob) => {
+      if (blob) resolve(blob);
+      else reject(new Error('图片转换失败'));
+    }, 'image/png');
+  });
+}
+
+async function convertImageBlobToPng(blob) {
+  const objectUrl = URL.createObjectURL(blob);
+  try {
+    const image = await loadBlobImage(objectUrl);
+    const width = image.naturalWidth || image.width;
+    const height = image.naturalHeight || image.height;
+    if (!width || !height) throw new Error('图片尺寸无效');
+
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext('2d');
+    if (!context) throw new Error('图片转换失败');
+    context.drawImage(image, 0, 0);
+    return await canvasToPngBlob(canvas);
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 function isLocalHostname(hostname) {
@@ -234,6 +268,37 @@ export default function MaterialHubApp() {
       }
     },
     [message],
+  );
+
+  const copyImage = useCallback(
+    async (item) => {
+      if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+        message.error('请长按图片保存/复制');
+        return;
+      }
+
+      try {
+        const response = await fetch(item.rawUrl);
+        if (!response.ok) throw new Error('图片读取失败');
+
+        const blob = await response.blob();
+        try {
+          await navigator.clipboard.write([
+            new ClipboardItem({ [blob.type || 'image/png']: blob }),
+          ]);
+        } catch (error) {
+          if (blob.type === 'image/png') throw error;
+          const pngBlob = await convertImageBlobToPng(blob);
+          await navigator.clipboard.write([
+            new ClipboardItem({ 'image/png': pngBlob }),
+          ]);
+        }
+        message.success('图片已复制');
+      } catch (error) {
+        showError(error, '图片复制失败');
+      }
+    },
+    [message, showError],
   );
 
   const upsertItems = useCallback((newItems) => {
@@ -620,7 +685,8 @@ export default function MaterialHubApp() {
               <MaterialCard
                 key={item.id}
                 item={item}
-                onCopy={copyText}
+                onCopyImage={copyImage}
+                onCopyText={copyText}
                 onDelete={handleDelete}
                 onPreview={openImagePreview}
               />
@@ -721,11 +787,12 @@ function ConnectionModal({ currentClientId, info, open, onClose }) {
   );
 }
 
-function MaterialCard({ item, onCopy, onDelete, onPreview }) {
+function MaterialCard({ item, onCopyImage, onCopyText, onDelete, onPreview }) {
   const isText = item.type === 'text';
   const isImage = isImageItem(item);
   const isVideo = (item.mime || '').startsWith('video/');
   const isAudio = (item.mime || '').startsWith('audio/');
+  const canCopy = isText || isImage;
 
   const subtitle = [
     isText ? '文本' : item.fileName,
@@ -758,13 +825,18 @@ function MaterialCard({ item, onCopy, onDelete, onPreview }) {
           <Text className="item-subtitle">{subtitle}</Text>
         </div>
         {item.note ? <Text className="item-note">{item.note}</Text> : null}
-        <div className="item-actions">
-          <Button
-            icon={<CopyOutlined />}
-            onClick={() => onCopy(isText ? item.text : absoluteUrl(item.rawUrl), isText ? '文本已复制' : '链接已复制')}
-          >
-            复制
-          </Button>
+        <div className={`item-actions ${canCopy ? '' : 'without-copy'}`}>
+          {canCopy ? (
+            <Button
+              icon={<CopyOutlined />}
+              onClick={() => {
+                if (isText) onCopyText(item.text || '', '文本已复制');
+                else onCopyImage(item);
+              }}
+            >
+              复制
+            </Button>
+          ) : null}
           <Button icon={<DownloadOutlined />} href={item.downloadUrl} download={item.fileName || `${item.title || 'text'}.txt`}>
             下载
           </Button>
