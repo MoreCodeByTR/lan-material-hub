@@ -26,6 +26,7 @@ const DEFAULT_DATA_DIR = USE_MANAGED_HOME
 const DATA_DIR = path.resolve(process.env.DATA_DIR || DEFAULT_DATA_DIR);
 const UPLOAD_DIR = path.join(DATA_DIR, 'uploads');
 const META_FILE = path.join(DATA_DIR, 'items.json');
+const CATEGORY_FILE = path.join(DATA_DIR, 'categories.json');
 const START_PORT = readPort(process.env.PORT, 7788);
 const PORT_RETRY_LIMIT = readPositiveInteger(process.env.PORT_RETRY_LIMIT, 20);
 const HOST = process.env.HOST || '0.0.0.0';
@@ -37,7 +38,9 @@ const SITE_NICKNAME = cleanText(
 const SERVER_STARTED_AT = nowIso();
 
 let items = [];
+let categories = [];
 let saveQueue = Promise.resolve();
+let saveCategoryQueue = Promise.resolve();
 let currentPort = START_PORT;
 const linkedDevices = new Map();
 
@@ -68,9 +71,39 @@ function cleanText(value, max = 4000) {
   return value.trim().slice(0, max);
 }
 
+function cleanCategoryName(value) {
+  return cleanText(value, 40).replace(/\s+/g, ' ');
+}
+
 function limitText(value, max = 4000) {
   if (typeof value !== 'string') return '';
   return value.slice(0, max);
+}
+
+function normalizeIds(value) {
+  let list = [];
+
+  if (Array.isArray(value)) {
+    list = value;
+  } else if (typeof value === 'string') {
+    const text = value.trim();
+    if (!text) return [];
+
+    try {
+      const parsed = JSON.parse(text);
+      list = Array.isArray(parsed) ? parsed : [parsed];
+    } catch (_error) {
+      list = text.split(',');
+    }
+  } else if (value != null) {
+    list = [value];
+  }
+
+  return [...new Set(
+    list
+      .map((id) => cleanText(String(id), 100))
+      .filter(Boolean),
+  )];
 }
 
 function safeOriginalName(name) {
@@ -218,6 +251,8 @@ async function ensureStorage() {
     items = [];
     await saveItems();
   }
+
+  await loadCategories();
 }
 
 async function migrateLegacyManagedData() {
@@ -244,12 +279,94 @@ async function saveItems() {
   return saveQueue;
 }
 
+async function loadCategories() {
+  try {
+    const content = await fsp.readFile(CATEGORY_FILE, 'utf8');
+    const parsed = JSON.parse(content);
+    categories = normalizeCategories(Array.isArray(parsed) ? parsed : []);
+  } catch (error) {
+    if (error.code !== 'ENOENT') {
+      console.warn('Failed to read categories, starting with an empty list:', error.message);
+    }
+    categories = [];
+    await saveCategories();
+  }
+}
+
+async function saveCategories() {
+  saveCategoryQueue = saveCategoryQueue.catch(() => undefined).then(async () => {
+    await fsp.mkdir(DATA_DIR, { recursive: true });
+    const tempFile = `${CATEGORY_FILE}.${process.pid}.${createId()}.tmp`;
+    await fsp.writeFile(tempFile, JSON.stringify(categories, null, 2), 'utf8');
+    await fsp.rename(tempFile, CATEGORY_FILE);
+  });
+  return saveCategoryQueue;
+}
+
+function normalizeCategories(list) {
+  const seenIds = new Set();
+  const seenNames = new Set();
+  const normalized = [];
+
+  for (const entry of list) {
+    const input = entry && typeof entry === 'object' ? entry : {};
+    const name = cleanCategoryName(input.name);
+    if (!name) continue;
+
+    const nameKey = name.toLowerCase();
+    if (seenNames.has(nameKey)) continue;
+
+    let id = cleanText(input.id, 100) || createId();
+    if (seenIds.has(id)) id = createId();
+
+    const createdAt = cleanText(input.createdAt, 40) || nowIso();
+    seenIds.add(id);
+    seenNames.add(nameKey);
+    normalized.push({ id, name, createdAt });
+  }
+
+  return normalized;
+}
+
+function toPublicCategory(category) {
+  return {
+    id: category.id,
+    name: category.name,
+    createdAt: category.createdAt,
+  };
+}
+
+function publicCategories() {
+  return [...categories]
+    .sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt))
+    .map(toPublicCategory);
+}
+
+function cleanExistingCategoryIds(value) {
+  const validIds = new Set(categories.map((category) => category.id));
+  return normalizeIds(value).filter((id) => validIds.has(id));
+}
+
+function itemCategoryIds(item) {
+  return cleanExistingCategoryIds(item.categoryIds);
+}
+
+function itemCategories(item) {
+  const ids = new Set(itemCategoryIds(item));
+  return categories
+    .filter((category) => ids.has(category.id))
+    .map(toPublicCategory);
+}
+
 function toPublicItem(item) {
+  const categoryIds = itemCategoryIds(item);
   const base = {
     id: item.id,
     type: item.type,
     title: item.title,
     note: item.note || '',
+    categoryIds,
+    categories: itemCategories(item),
     createdAt: item.createdAt,
     source: item.source || '',
   };
@@ -282,6 +399,31 @@ function findItem(id) {
   return items.find((item) => item.id === id);
 }
 
+async function removeItemsByIds(ids) {
+  const targetIds = new Set(normalizeIds(ids));
+  if (targetIds.size === 0) return [];
+
+  const keep = [];
+  const removed = [];
+
+  for (const item of items) {
+    if (targetIds.has(item.id)) removed.push(item);
+    else keep.push(item);
+  }
+
+  if (removed.length === 0) return [];
+
+  for (const item of removed) {
+    if (item.type === 'file' && item.storedName) {
+      await fsp.unlink(path.join(UPLOAD_DIR, item.storedName)).catch(() => undefined);
+    }
+  }
+
+  items = keep;
+  await saveItems();
+  return removed;
+}
+
 function itemMatchesQuery(item, query) {
   if (!query) return true;
   const haystack = [
@@ -291,12 +433,26 @@ function itemMatchesQuery(item, query) {
     item.fileName,
     item.mime,
     item.source,
+    ...itemCategories(item).map((category) => category.name),
   ]
     .filter(Boolean)
     .join('\n')
     .toLowerCase();
 
   return haystack.includes(query);
+}
+
+function itemMatchesCategories(item, categoryIds) {
+  if (categoryIds.length === 0) return true;
+  const ids = new Set(itemCategoryIds(item));
+  return categoryIds.some((id) => ids.has(id));
+}
+
+function fallbackItemTitle(item) {
+  if (item.type === 'text') {
+    return (item.text || '').trim().split('\n')[0].slice(0, 80) || '文本素材';
+  }
+  return item.fileName || '未命名素材';
 }
 
 const upload = multer({
@@ -400,6 +556,108 @@ app.get('/api/info', (_req, res) => {
   });
 });
 
+app.get('/api/categories', (_req, res) => {
+  res.json({ categories: publicCategories() });
+});
+
+app.post('/api/categories', async (req, res, next) => {
+  try {
+    const name = cleanCategoryName(req.body?.name);
+    if (!name) {
+      res.status(400).json({ error: '分类名称不能为空' });
+      return;
+    }
+
+    const existing = categories.find((category) => category.name.toLowerCase() === name.toLowerCase());
+    if (existing) {
+      res.json({ category: toPublicCategory(existing), categories: publicCategories() });
+      return;
+    }
+
+    const category = {
+      id: createId(),
+      name,
+      createdAt: nowIso(),
+    };
+    categories.push(category);
+    await saveCategories();
+
+    const publicList = publicCategories();
+    broadcast({ type: 'categories:updated', categories: publicList });
+    res.status(201).json({ category: toPublicCategory(category), categories: publicList });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/categories/:id', async (req, res, next) => {
+  try {
+    const category = categories.find((entry) => entry.id === req.params.id);
+    if (!category) {
+      res.status(404).json({ error: '分类不存在' });
+      return;
+    }
+
+    const name = cleanCategoryName(req.body?.name);
+    if (!name) {
+      res.status(400).json({ error: '分类名称不能为空' });
+      return;
+    }
+
+    const duplicated = categories.find(
+      (entry) => entry.id !== category.id && entry.name.toLowerCase() === name.toLowerCase(),
+    );
+    if (duplicated) {
+      res.status(409).json({ error: '分类已存在' });
+      return;
+    }
+
+    category.name = name;
+    await saveCategories();
+
+    const publicList = publicCategories();
+    broadcast({ type: 'categories:updated', categories: publicList });
+    res.json({ category: toPublicCategory(category), categories: publicList });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete('/api/categories/:id', async (req, res, next) => {
+  try {
+    const index = categories.findIndex((entry) => entry.id === req.params.id);
+    if (index === -1) {
+      res.status(404).json({ error: '分类不存在' });
+      return;
+    }
+
+    const [removed] = categories.splice(index, 1);
+    const affectedItems = [];
+    for (const item of items) {
+      const nextCategoryIds = normalizeIds(item.categoryIds).filter((id) => id !== removed.id);
+      if (nextCategoryIds.length === normalizeIds(item.categoryIds).length) continue;
+      item.categoryIds = nextCategoryIds;
+      affectedItems.push(item);
+    }
+
+    await saveCategories();
+    if (affectedItems.length > 0) await saveItems();
+
+    const publicList = publicCategories();
+    const publicItems = affectedItems.map(toPublicItem);
+    broadcast({ type: 'categories:updated', categories: publicList });
+    if (publicItems.length > 0) broadcast({ type: 'items:updated', items: publicItems });
+    res.json({
+      ok: true,
+      category: toPublicCategory(removed),
+      categories: publicList,
+      items: publicItems,
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
 app.get('/api/qr.svg', async (req, res, next) => {
   try {
     const url = cleanText(req.query.url, 500) || primaryLanUrl();
@@ -421,10 +679,12 @@ app.get('/api/qr.svg', async (req, res, next) => {
 app.get('/api/items', (req, res) => {
   const query = cleanText(req.query.q, 200).toLowerCase();
   const type = cleanText(req.query.type, 20);
+  const categoryIds = cleanExistingCategoryIds(req.query.categoryIds || req.query.categoryId);
   const limit = Math.min(Number(req.query.limit || 200), 500);
 
   const filtered = sortNewestFirst(items)
     .filter((item) => (type && type !== 'all' ? item.type === type : true))
+    .filter((item) => itemMatchesCategories(item, categoryIds))
     .filter((item) => itemMatchesQuery(item, query));
 
   res.json({
@@ -438,6 +698,7 @@ app.post('/api/items', upload.array('files', 50), async (req, res, next) => {
     const title = cleanText(req.body.title, 200);
     const note = cleanText(req.body.note, 2000);
     const text = limitText(req.body.text, 200000);
+    const categoryIds = cleanExistingCategoryIds(req.body.categoryIds);
     const source = getClientIp(req);
     const created = [];
 
@@ -448,6 +709,7 @@ app.post('/api/items', upload.array('files', 50), async (req, res, next) => {
         title: title || text.trim().split('\n')[0].slice(0, 80) || '文本素材',
         text,
         note,
+        categoryIds,
         source,
         createdAt: nowIso(),
       };
@@ -470,6 +732,7 @@ app.post('/api/items', upload.array('files', 50), async (req, res, next) => {
         storedName: file.filename,
         mime: detectedMime,
         size: file.size,
+        categoryIds,
         source,
         createdAt: nowIso(),
       };
@@ -486,6 +749,61 @@ app.post('/api/items', upload.array('files', 50), async (req, res, next) => {
     const publicItems = created.map(toPublicItem);
     broadcast({ type: 'items:created', items: publicItems });
     res.status(201).json({ items: publicItems });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.patch('/api/items/:id', async (req, res, next) => {
+  try {
+    const item = findItem(req.params.id);
+    if (!item) {
+      res.status(404).json({ error: '素材不存在' });
+      return;
+    }
+
+    const body = req.body || {};
+    const canUpdate = ['title', 'note', 'categoryIds'].some((field) => (
+      Object.prototype.hasOwnProperty.call(body, field)
+    ));
+
+    if (!canUpdate) {
+      res.status(400).json({ error: '没有可更新的字段' });
+      return;
+    }
+
+    if (Object.prototype.hasOwnProperty.call(body, 'title')) {
+      item.title = cleanText(body.title, 200) || fallbackItemTitle(item);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'note')) {
+      item.note = cleanText(body.note, 2000);
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'categoryIds')) {
+      item.categoryIds = cleanExistingCategoryIds(body.categoryIds);
+    }
+    await saveItems();
+
+    const publicItem = toPublicItem(item);
+    broadcast({ type: 'items:updated', item: publicItem });
+    res.json({ item: publicItem });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post('/api/items/delete', async (req, res, next) => {
+  try {
+    const body = req.body || {};
+    const targetIds = body.all ? items.map((item) => item.id) : normalizeIds(body.ids);
+    if (!body.all && targetIds.length === 0) {
+      res.status(400).json({ error: '请选择要删除的素材' });
+      return;
+    }
+
+    const removed = await removeItemsByIds(targetIds);
+    const ids = removed.map((item) => item.id);
+    broadcast({ type: 'items:cleared', ids });
+    res.json({ ok: true, removed: removed.length, ids });
   } catch (error) {
     next(error);
   }
@@ -561,19 +879,13 @@ app.get('/api/items/:id/download', (req, res) => {
 
 app.delete('/api/items/:id', async (req, res, next) => {
   try {
-    const index = items.findIndex((item) => item.id === req.params.id);
-    if (index === -1) {
+    const removed = await removeItemsByIds([req.params.id]);
+    if (removed.length === 0) {
       res.status(404).json({ error: '素材不存在' });
       return;
     }
 
-    const [removed] = items.splice(index, 1);
-    if (removed.type === 'file' && removed.storedName) {
-      await fsp.unlink(path.join(UPLOAD_DIR, removed.storedName)).catch(() => undefined);
-    }
-
-    await saveItems();
-    broadcast({ type: 'items:deleted', id: removed.id });
+    broadcast({ type: 'items:deleted', id: removed[0].id });
     res.json({ ok: true });
   } catch (error) {
     next(error);

@@ -12,27 +12,34 @@ import {
   Modal,
   QRCode,
   Segmented,
+  Select,
   Space,
   Tag,
+  Table,
   Tooltip,
   Typography,
   Upload,
 } from 'antd';
 import {
   AudioOutlined,
+  CheckOutlined,
+  CloseOutlined,
   CopyOutlined,
   CustomerServiceOutlined,
   DeleteOutlined,
   DesktopOutlined,
   DownloadOutlined,
+  EditOutlined,
   FileOutlined,
   FileTextOutlined,
   InboxOutlined,
   LinkOutlined,
   PictureOutlined,
+  PlusOutlined,
   ReloadOutlined,
   SendOutlined,
   SettingOutlined,
+  TagsOutlined,
   UploadOutlined,
   VideoCameraOutlined,
 } from '@ant-design/icons';
@@ -76,10 +83,15 @@ function extensionOf(fileName = '') {
   return parts.pop().slice(0, 8) || 'file';
 }
 
-function itemIsVisible(item, type, query) {
+function itemIsVisible(item, type, query, categoryFilter, categoryById) {
   if (type !== 'all' && item.type !== type) return false;
+  const categoryIds = itemCategoryIds(item);
+  if (categoryFilter.length > 0 && !categoryFilter.some((id) => categoryIds.includes(id))) {
+    return false;
+  }
   if (!query) return true;
-  const haystack = [item.title, item.note, item.text, item.fileName, item.mime, item.source]
+  const categoryNames = itemCategories(item, categoryById).map((category) => category.name);
+  const haystack = [item.title, item.note, item.text, item.fileName, item.mime, item.source, ...categoryNames]
     .filter(Boolean)
     .join('\n')
     .toLowerCase();
@@ -90,6 +102,26 @@ function getUploadFile(uploadFile) {
   if (uploadFile?.originFileObj instanceof File) return uploadFile.originFileObj;
   if (uploadFile instanceof File) return uploadFile;
   return null;
+}
+
+function uniqueValues(values = []) {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function itemCategoryIds(item) {
+  const ids = Array.isArray(item.categoryIds)
+    ? item.categoryIds
+    : (item.categories || []).map((category) => category.id);
+  return uniqueValues(ids);
+}
+
+function itemCategories(item, categoryById) {
+  const fromIds = itemCategoryIds(item)
+    .map((id) => categoryById.get(id))
+    .filter(Boolean);
+
+  if (fromIds.length > 0) return fromIds;
+  return Array.isArray(item.categories) ? item.categories : [];
 }
 
 function loadBlobImage(objectUrl) {
@@ -207,8 +239,10 @@ export default function MaterialHubApp() {
   const { message, modal } = App.useApp();
   const [info, setInfo] = useState(null);
   const [items, setItems] = useState([]);
+  const [categories, setCategories] = useState([]);
   const [type, setType] = useState('all');
   const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState([]);
   const [socketState, setSocketState] = useState({ label: '连接中', status: 'pending' });
   const [fileList, setFileList] = useState([]);
   const [uploading, setUploading] = useState(false);
@@ -216,14 +250,36 @@ export default function MaterialHubApp() {
   const [previewOpen, setPreviewOpen] = useState(false);
   const [previewIndex, setPreviewIndex] = useState(0);
   const [connectionOpen, setConnectionOpen] = useState(false);
+  const [managerOpen, setManagerOpen] = useState(false);
+  const [selectedItemIds, setSelectedItemIds] = useState([]);
+  const [batchDeleting, setBatchDeleting] = useState(false);
+  const [editingItem, setEditingItem] = useState(null);
+  const [savingItemEdit, setSavingItemEdit] = useState(false);
+  const [creatingCategory, setCreatingCategory] = useState(false);
+  const [editingCategoryId, setEditingCategoryId] = useState('');
+  const [editingCategoryName, setEditingCategoryName] = useState('');
+  const [savingCategoryId, setSavingCategoryId] = useState('');
+  const [deletingCategoryId, setDeletingCategoryId] = useState('');
   const [currentClientId, setCurrentClientId] = useState('');
+  const [categoryForm] = Form.useForm();
   const [fileForm] = Form.useForm();
+  const [itemForm] = Form.useForm();
   const [textForm] = Form.useForm();
   const reconnectTimer = useRef(null);
 
+  const categoryById = useMemo(
+    () => new Map(categories.map((category) => [category.id, category])),
+    [categories],
+  );
+
+  const categoryOptions = useMemo(
+    () => categories.map((category) => ({ label: category.name, value: category.id })),
+    [categories],
+  );
+
   const visibleItems = useMemo(
-    () => items.filter((item) => itemIsVisible(item, type, query)),
-    [items, type, query],
+    () => items.filter((item) => itemIsVisible(item, type, query, categoryFilter, categoryById)),
+    [categoryById, categoryFilter, items, type, query],
   );
 
   const imageItems = useMemo(() => visibleItems.filter(isImageItem), [visibleItems]);
@@ -242,6 +298,10 @@ export default function MaterialHubApp() {
   const selectedUrl = accessUrls[0] || '';
   const siteTitle = info?.site?.nickname || '素材中转站';
   const linkedDevices = info?.linkedDevices || [];
+  const latestEditingItem = useMemo(
+    () => (editingItem ? items.find((item) => item.id === editingItem.id) || editingItem : null),
+    [editingItem, items],
+  );
 
   const showError = useCallback(
     (error, fallback = '操作失败') => {
@@ -314,6 +374,14 @@ export default function MaterialHubApp() {
     setItems((previous) => previous.filter((item) => !idSet.has(item.id)));
   }, []);
 
+  const upsertCategories = useCallback((newCategories) => {
+    setCategories((previous) => {
+      const byId = new Map(previous.map((category) => [category.id, category]));
+      for (const category of newCategories) byId.set(category.id, category);
+      return [...byId.values()].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+    });
+  }, []);
+
   const loadInfo = useCallback(async () => {
     const response = await fetch('/api/info');
     if (!response.ok) throw new Error('入口信息加载失败');
@@ -322,12 +390,188 @@ export default function MaterialHubApp() {
     return data;
   }, []);
 
+  const loadCategories = useCallback(async () => {
+    const response = await fetch('/api/categories');
+    if (!response.ok) throw new Error('分类加载失败');
+    const data = await response.json();
+    setCategories(data.categories || []);
+    return data.categories || [];
+  }, []);
+
   const loadItems = useCallback(async () => {
     const response = await fetch('/api/items');
     if (!response.ok) throw new Error('素材列表加载失败');
     const data = await response.json();
     setItems(data.items || []);
   }, []);
+
+  const createCategory = useCallback(
+    async (name) => {
+      const cleanName = String(name || '').trim();
+      if (!cleanName) return null;
+
+      const response = await fetch('/api/categories', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: cleanName }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || '分类创建失败');
+      if (data.categories) setCategories(data.categories);
+      else if (data.category) upsertCategories([data.category]);
+      return data.category;
+    },
+    [upsertCategories],
+  );
+
+  const updateCategory = useCallback(async (categoryId, name) => {
+    const response = await fetch(`/api/categories/${categoryId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name }),
+    });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || '分类更新失败');
+    setCategories(data.categories || []);
+    return data.category;
+  }, []);
+
+  const resolveCategoryValues = useCallback(
+    async (values) => {
+      const byId = new Map(categories.map((category) => [category.id, category]));
+      const byName = new Map(categories.map((category) => [category.name.toLowerCase(), category]));
+      const resolved = [];
+
+      for (const rawValue of uniqueValues(values)) {
+        const existingById = byId.get(rawValue);
+        if (existingById) {
+          resolved.push(existingById.id);
+          continue;
+        }
+
+        const existingByName = byName.get(rawValue.toLowerCase());
+        if (existingByName) {
+          resolved.push(existingByName.id);
+          continue;
+        }
+
+        const created = await createCategory(rawValue);
+        if (!created) continue;
+        byId.set(created.id, created);
+        byName.set(created.name.toLowerCase(), created);
+        resolved.push(created.id);
+      }
+
+      return uniqueValues(resolved);
+    },
+    [categories, createCategory],
+  );
+
+  const handleCreateCategory = useCallback(
+    async (values) => {
+      const name = String(values.name || '').trim();
+      if (!name) {
+        message.warning('请输入分类名称');
+        return;
+      }
+
+      const existing = categories.find((category) => category.name.toLowerCase() === name.toLowerCase());
+      if (existing) {
+        message.info('分类已存在');
+        categoryForm.resetFields();
+        return;
+      }
+
+      setCreatingCategory(true);
+      try {
+        await createCategory(name);
+        categoryForm.resetFields();
+        message.success('分类已新增');
+      } catch (error) {
+        showError(error, '分类创建失败');
+      } finally {
+        setCreatingCategory(false);
+      }
+    },
+    [categories, categoryForm, createCategory, message, showError],
+  );
+
+  const startEditCategory = useCallback((category) => {
+    setEditingCategoryId(category.id);
+    setEditingCategoryName(category.name);
+  }, []);
+
+  const cancelEditCategory = useCallback(() => {
+    setEditingCategoryId('');
+    setEditingCategoryName('');
+  }, []);
+
+  const saveCategoryName = useCallback(
+    async (category) => {
+      const name = editingCategoryName.trim();
+      if (!name) {
+        message.warning('请输入分类名称');
+        return;
+      }
+
+      const duplicated = categories.find(
+        (entry) => entry.id !== category.id && entry.name.toLowerCase() === name.toLowerCase(),
+      );
+      if (duplicated) {
+        message.warning('分类已存在');
+        return;
+      }
+
+      if (name === category.name) {
+        cancelEditCategory();
+        return;
+      }
+
+      setSavingCategoryId(category.id);
+      try {
+        await updateCategory(category.id, name);
+        cancelEditCategory();
+        message.success('分类已更新');
+      } catch (error) {
+        showError(error, '分类更新失败');
+      } finally {
+        setSavingCategoryId('');
+      }
+    },
+    [cancelEditCategory, categories, editingCategoryName, message, showError, updateCategory],
+  );
+
+  const deleteCategory = useCallback(
+    (category) => {
+      modal.confirm({
+        title: `删除分类“${category.name}”？`,
+        content: '素材不会被删除，只会移除这个分类关联。',
+        okText: '删除',
+        okButtonProps: { danger: true },
+        cancelText: '取消',
+        async onOk() {
+          setDeletingCategoryId(category.id);
+          try {
+            const response = await fetch(`/api/categories/${category.id}`, { method: 'DELETE' });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || '分类删除失败');
+
+            setCategories(data.categories || []);
+            if (data.items?.length > 0) upsertItems(data.items);
+            setCategoryFilter((previous) => previous.filter((id) => id !== category.id));
+            if (editingCategoryId === category.id) cancelEditCategory();
+            message.success('分类已删除');
+          } catch (error) {
+            showError(error, '分类删除失败');
+            throw error;
+          } finally {
+            setDeletingCategoryId('');
+          }
+        },
+      });
+    },
+    [cancelEditCategory, editingCategoryId, message, modal, showError, upsertItems],
+  );
 
   const uploadFormData = useCallback(
     async (formData) => {
@@ -339,6 +583,21 @@ export default function MaterialHubApp() {
       if (!response.ok) throw new Error(data.error || '上传失败');
       upsertItems(data.items || []);
       return data.items || [];
+    },
+    [upsertItems],
+  );
+
+  const updateItem = useCallback(
+    async (itemId, values) => {
+      const response = await fetch(`/api/items/${itemId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(values),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.error || '素材更新失败');
+      if (data.item) upsertItems([data.item]);
+      return data.item;
     },
     [upsertItems],
   );
@@ -367,6 +626,8 @@ export default function MaterialHubApp() {
 
     setUploading(true);
     try {
+      const categoryIds = await resolveCategoryValues(values.categoryIds || []);
+      if (categoryIds.length > 0) formData.append('categoryIds', JSON.stringify(categoryIds));
       await uploadFormData(formData);
       setFileList([]);
       fileForm.resetFields();
@@ -376,7 +637,7 @@ export default function MaterialHubApp() {
     } finally {
       setUploading(false);
     }
-  }, [fileForm, fileList, message, showError, uploadFormData]);
+  }, [fileForm, fileList, message, resolveCategoryValues, showError, uploadFormData]);
 
   const handleSendText = useCallback(
     async (values) => {
@@ -392,6 +653,8 @@ export default function MaterialHubApp() {
 
       setSendingText(true);
       try {
+        const categoryIds = await resolveCategoryValues(values.categoryIds || []);
+        if (categoryIds.length > 0) formData.append('categoryIds', JSON.stringify(categoryIds));
         await uploadFormData(formData);
         textForm.resetFields();
         message.success('已发送');
@@ -401,7 +664,7 @@ export default function MaterialHubApp() {
         setSendingText(false);
       }
     },
-    [message, showError, textForm, uploadFormData],
+    [message, resolveCategoryValues, showError, textForm, uploadFormData],
   );
 
   const handlePasteText = useCallback(async () => {
@@ -430,6 +693,99 @@ export default function MaterialHubApp() {
       });
     },
     [message, modal, removeItems],
+  );
+
+  const handleBulkDelete = useCallback(
+    (ids, options = {}) => {
+      const targetIds = options.all ? items.map((item) => item.id) : uniqueValues(ids);
+      if (targetIds.length === 0) {
+        message.warning('请选择素材');
+        return;
+      }
+
+      modal.confirm({
+        title: options.all ? '删除全部素材？' : `删除选中的 ${targetIds.length} 项素材？`,
+        content: '删除后无法恢复。',
+        okText: '删除',
+        okButtonProps: { danger: true },
+        cancelText: '取消',
+        async onOk() {
+          setBatchDeleting(true);
+          try {
+            const response = await fetch('/api/items/delete', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(options.all ? { all: true } : { ids: targetIds }),
+            });
+            const data = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(data.error || '删除失败');
+
+            const removedIds = data.ids || targetIds;
+            removeItems(removedIds);
+            setSelectedItemIds((previous) => previous.filter((id) => !removedIds.includes(id)));
+            message.success(options.all ? '已全部删除' : `已删除 ${removedIds.length} 项`);
+          } catch (error) {
+            showError(error, '删除失败');
+            throw error;
+          } finally {
+            setBatchDeleting(false);
+          }
+        },
+      });
+    },
+    [items, message, modal, removeItems, showError],
+  );
+
+  const handleUpdateItemCategories = useCallback(
+    async (item, values) => {
+      try {
+        const categoryIds = await resolveCategoryValues(values);
+        await updateItem(item.id, { categoryIds });
+        message.success('分类已更新');
+      } catch (error) {
+        showError(error, '分类更新失败');
+      }
+    },
+    [message, resolveCategoryValues, showError, updateItem],
+  );
+
+  const handleFilterCategory = useCallback((categoryId) => {
+    setCategoryFilter([categoryId]);
+  }, []);
+
+  const openItemEditor = useCallback(
+    (item) => {
+      setEditingItem(item);
+    },
+    [],
+  );
+
+  const closeItemEditor = useCallback(() => {
+    setEditingItem(null);
+    itemForm.resetFields();
+  }, [itemForm]);
+
+  const handleSaveItemEdit = useCallback(
+    async (values) => {
+      if (!editingItem) return;
+
+      setSavingItemEdit(true);
+      try {
+        const categoryIds = await resolveCategoryValues(values.categoryIds || []);
+        await updateItem(editingItem.id, {
+          title: values.title || '',
+          note: values.note || '',
+          categoryIds,
+        });
+        closeItemEditor();
+        message.success('素材已更新');
+      } catch (error) {
+        showError(error, '素材更新失败');
+      } finally {
+        setSavingItemEdit(false);
+      }
+    },
+    [closeItemEditor, editingItem, message, resolveCategoryValues, showError, updateItem],
   );
 
   const openImagePreview = useCallback(
@@ -461,8 +817,18 @@ export default function MaterialHubApp() {
   }, [imageItems, previewOpen]);
 
   useEffect(() => {
-    Promise.all([loadInfo(), loadItems()]).catch((error) => showError(error));
-  }, [loadInfo, loadItems, showError]);
+    Promise.all([loadInfo(), loadItems(), loadCategories()]).catch((error) => showError(error));
+  }, [loadCategories, loadInfo, loadItems, showError]);
+
+  useEffect(() => {
+    const itemIds = new Set(items.map((item) => item.id));
+    setSelectedItemIds((previous) => previous.filter((id) => itemIds.has(id)));
+  }, [items]);
+
+  useEffect(() => {
+    const categoryIds = new Set(categories.map((category) => category.id));
+    setCategoryFilter((previous) => previous.filter((id) => categoryIds.has(id)));
+  }, [categories]);
 
   useEffect(() => {
     let closed = false;
@@ -498,7 +864,12 @@ export default function MaterialHubApp() {
           if (data.type === 'clients:updated') {
             setInfo((previous) => previous ? { ...previous, linkedDevices: data.linkedDevices || [] } : previous);
           }
+          if (data.type === 'categories:updated') setCategories(data.categories || []);
           if (data.type === 'items:created') upsertItems(data.items || []);
+          if (data.type === 'items:updated') {
+            if (Array.isArray(data.items)) upsertItems(data.items);
+            else if (data.item) upsertItems([data.item]);
+          }
           if (data.type === 'items:deleted') removeItems([data.id]);
           if (data.type === 'items:cleared') removeItems(data.ids || []);
         } catch (_error) {
@@ -565,14 +936,17 @@ export default function MaterialHubApp() {
       </header>
 
       <section className="workspace">
-        <Card className="hub-panel" styles={{ body: { padding: 14 } }}>
-          <Form form={fileForm} layout="vertical" onFinish={handleUpload}>
+        <Card className="hub-panel input-bottom-panel" styles={{ body: { padding: 14 } }}>
+          <Form className="panel-bottom-form" form={fileForm} layout="vertical" onFinish={handleUpload}>
             <Dragger
               multiple
               fileList={fileList}
               beforeUpload={() => false}
               onChange={({ fileList: nextFileList }) => setFileList(nextFileList)}
               itemRender={(originNode) => originNode}
+              style={
+                {marginBottom:'10px'}
+              }
             >
               <p className="upload-icon">
                 <InboxOutlined />
@@ -580,49 +954,81 @@ export default function MaterialHubApp() {
               <p className="upload-title">文件</p>
               <p className="upload-hint">选择或拖入素材</p>
             </Dragger>
-            <Form.Item name="title" style={{marginTop:10}}>
-              <Input placeholder="标题" allowClear />
-            </Form.Item>
-            <Form.Item name="note">
-              <Input.TextArea placeholder="备注" autoSize={{ minRows: 2, maxRows: 4 }} />
-            </Form.Item>
-            <Button
-              block
-              type="primary"
-              htmlType="submit"
-              icon={<UploadOutlined />}
-              loading={uploading}
-            >
-              上传文件
-            </Button>
+            <div className="panel-input-stack">
+              <Form.Item name="title">
+                <Input placeholder="标题" allowClear />
+              </Form.Item>
+              <Form.Item name="note">
+                <Input.TextArea placeholder="备注" autoSize={{ minRows: 2, maxRows: 4 }} />
+              </Form.Item>
+              <Form.Item name="categoryIds">
+                <CategorySelect
+                  options={categoryOptions}
+                  placeholder="选择分类"
+                />
+              </Form.Item>
+              <Button
+                block
+                type="primary"
+                htmlType="submit"
+                icon={<UploadOutlined />}
+                loading={uploading}
+              >
+                上传文件
+              </Button>
+            </div>
           </Form>
         </Card>
 
-        <Card className="hub-panel" styles={{ body: { padding: 14 } }}>
-          <Form form={textForm} layout="vertical" onFinish={handleSendText}>
+        <Card className="hub-panel input-bottom-panel" styles={{ body: { padding: 14 } }}>
+          <Form className="panel-bottom-form" form={textForm} layout="vertical" onFinish={handleSendText}>
             <div className="panel-title-row">
               <strong>文本</strong>
               <Button size="small" icon={<CopyOutlined />} onClick={handlePasteText}>
                 粘贴
               </Button>
             </div>
-            <Form.Item name="title">
-              <Input placeholder="标题" allowClear />
-            </Form.Item>
-            <Form.Item name="text">
-              <Input.TextArea placeholder="接口返回、日志、token、说明" autoSize={{ minRows: 5, maxRows: 9 }} />
-            </Form.Item>
-            <Button
-              block
-              type="primary"
-              htmlType="submit"
-              icon={<SendOutlined />}
-              loading={sendingText}
-            >
-              发送文本
-            </Button>
+            <div className="panel-input-stack">
+              <Form.Item name="title">
+                <Input placeholder="标题" allowClear />
+              </Form.Item>
+              <Form.Item name="categoryIds">
+                <CategorySelect
+                  options={categoryOptions}
+                  placeholder="选择分类"
+                />
+              </Form.Item>
+              <Form.Item name="text">
+                <Input.TextArea placeholder="接口返回、日志、token、说明" autoSize={{ minRows: 5, maxRows: 9 }} />
+              </Form.Item>
+              <Button
+                block
+                type="primary"
+                htmlType="submit"
+                icon={<SendOutlined />}
+                loading={sendingText}
+              >
+                发送文本
+              </Button>
+            </div>
           </Form>
         </Card>
+
+        <CategoryPanel
+          categories={categories}
+          creating={creatingCategory}
+          deletingCategoryId={deletingCategoryId}
+          editingCategoryId={editingCategoryId}
+          editingCategoryName={editingCategoryName}
+          form={categoryForm}
+          savingCategoryId={savingCategoryId}
+          onCancelEdit={cancelEditCategory}
+          onCreate={handleCreateCategory}
+          onDelete={deleteCategory}
+          onEditNameChange={setEditingCategoryName}
+          onSaveEdit={saveCategoryName}
+          onStartEdit={startEditCategory}
+        />
 
         <Card className="hub-panel access-panel" styles={{ body: { padding: 14 } }}>
           <div className="panel-title-row">
@@ -651,12 +1057,26 @@ export default function MaterialHubApp() {
 
       <section className="toolbar">
         <Segmented options={TYPE_OPTIONS} value={type} onChange={setType} />
+        <Select
+          allowClear
+          className="category-filter"
+          maxTagCount="responsive"
+          mode="multiple"
+          optionFilterProp="label"
+          options={categoryOptions}
+          placeholder="按分类筛选"
+          value={categoryFilter}
+          onChange={(values) => setCategoryFilter(values)}
+        />
         <Input.Search
           allowClear
           placeholder="搜索标题、文本、文件名"
           value={query}
           onChange={(event) => setQuery(event.target.value.trim().toLowerCase())}
         />
+        <Button icon={<FileOutlined />} onClick={() => setManagerOpen(true)}>
+          文件管理
+        </Button>
       </section>
 
       <section className="feed-head">
@@ -688,7 +1108,10 @@ export default function MaterialHubApp() {
                 onCopyImage={copyImage}
                 onCopyText={copyText}
                 onDelete={handleDelete}
+                onEdit={openItemEditor}
+                onFilterCategory={handleFilterCategory}
                 onPreview={openImagePreview}
+                categoryById={categoryById}
               />
             ))
           )}
@@ -701,7 +1124,375 @@ export default function MaterialHubApp() {
         open={connectionOpen}
         onClose={() => setConnectionOpen(false)}
       />
+      <MaterialManagerModal
+        batchDeleting={batchDeleting}
+        categoryOptions={categoryOptions}
+        items={items}
+        open={managerOpen}
+        selectedRowKeys={selectedItemIds}
+        onBulkDelete={handleBulkDelete}
+        onClose={() => setManagerOpen(false)}
+        onEdit={openItemEditor}
+        onSelectionChange={setSelectedItemIds}
+        onUpdateCategories={handleUpdateItemCategories}
+      />
+      <MaterialEditModal
+        categoryOptions={categoryOptions}
+        form={itemForm}
+        item={latestEditingItem}
+        open={Boolean(editingItem)}
+        saving={savingItemEdit}
+        onCancel={closeItemEditor}
+        onSave={handleSaveItemEdit}
+      />
     </main>
+  );
+}
+
+function CategorySelect({ className, mode = 'multiple', options, placeholder, size, value, onChange }) {
+  return (
+    <Select
+      allowClear
+      className={className}
+      maxTagCount="responsive"
+      mode={mode}
+      optionFilterProp="label"
+      options={options}
+      placeholder={placeholder}
+      size={size}
+      style={{ width: '100%' }}
+      value={value}
+      onChange={onChange}
+    />
+  );
+}
+
+function CategoryPanel({
+  categories,
+  creating,
+  deletingCategoryId,
+  editingCategoryId,
+  editingCategoryName,
+  form,
+  savingCategoryId,
+  onCancelEdit,
+  onCreate,
+  onDelete,
+  onEditNameChange,
+  onSaveEdit,
+  onStartEdit,
+}) {
+  return (
+    <Card className="hub-panel category-panel" styles={{ body: { padding: 14 } }}>
+      <div className="panel-title-row">
+        <strong>分类</strong>
+        <Tag>{categories.length} 个</Tag>
+      </div>
+      <div className="category-list">
+        {categories.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无分类" />
+        ) : (
+          categories.map((category) => {
+            const editing = editingCategoryId === category.id;
+            return (
+              <div className="category-row" key={category.id}>
+                {editing ? (
+                  <Input
+                    autoFocus
+                    size="small"
+                    value={editingCategoryName}
+                    onChange={(event) => onEditNameChange(event.target.value)}
+                    onPressEnter={() => onSaveEdit(category)}
+                  />
+                ) : (
+                  <Tag icon={<TagsOutlined />}>{category.name}</Tag>
+                )}
+                {editing ? (
+                  <Space size={4}>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<CheckOutlined />}
+                      loading={savingCategoryId === category.id}
+                      onClick={() => onSaveEdit(category)}
+                    />
+                    <Button size="small" type="text" icon={<CloseOutlined />} onClick={onCancelEdit} />
+                  </Space>
+                ) : (
+                  <Space size={4}>
+                    <Button
+                      size="small"
+                      type="text"
+                      icon={<EditOutlined />}
+                      onClick={() => onStartEdit(category)}
+                    />
+                    <Button
+                      danger
+                      size="small"
+                      type="text"
+                      icon={<DeleteOutlined />}
+                      loading={deletingCategoryId === category.id}
+                      onClick={() => onDelete(category)}
+                    />
+                  </Space>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
+      <Form className="category-create-form" form={form} onFinish={onCreate}>
+        <Form.Item name="name">
+          <Input placeholder="新分类名称" allowClear />
+        </Form.Item>
+        <Button
+          block
+          type="primary"
+          htmlType="submit"
+          icon={<PlusOutlined />}
+          loading={creating}
+        >
+          新增分类
+        </Button>
+      </Form>
+    </Card>
+  );
+}
+
+function MaterialManagerModal({
+  batchDeleting,
+  categoryOptions,
+  items,
+  open,
+  selectedRowKeys,
+  onBulkDelete,
+  onClose,
+  onEdit,
+  onSelectionChange,
+  onUpdateCategories,
+}) {
+  const totalSize = useMemo(
+    () => items.reduce((sum, item) => sum + (Number(item.size) || 0), 0),
+    [items],
+  );
+
+  const columns = useMemo(
+    () => [
+      {
+        title: '预览',
+        dataIndex: 'preview',
+        width: 104,
+        render: (_, item) => <ManagerPreview item={item} />,
+      },
+      {
+        title: '素材',
+        dataIndex: 'title',
+        width: 420,
+        render: (_, item) => (
+          <div className="manager-item-cell">
+            <strong>{item.title || item.fileName || '未命名素材'}</strong>
+            <Text>{item.type === 'text' ? '文本' : item.fileName}</Text>
+          </div>
+        ),
+      },
+      {
+        title: '分类',
+        dataIndex: 'categoryIds',
+        width: 340,
+        render: (_, item) => (
+          <CategorySelect
+            className="manager-category-select"
+            options={categoryOptions}
+            placeholder="分类"
+            size="small"
+            value={itemCategoryIds(item)}
+            onChange={(values) => onUpdateCategories(item, values)}
+          />
+        ),
+      },
+      {
+        title: '类型',
+        dataIndex: 'type',
+        width: 72,
+        render: (value) => (value === 'text' ? '文本' : '文件'),
+      },
+      {
+        title: '大小',
+        dataIndex: 'size',
+        width: 92,
+        render: (value) => formatBytes(value),
+      },
+      {
+        title: '时间',
+        dataIndex: 'createdAt',
+        width: 116,
+        render: (value) => formatTime(value),
+      },
+      {
+        title: '操作',
+        width: 154,
+        fixed: 'right',
+        render: (_, item) => (
+          <Space size={6}>
+            <Button size="small" icon={<EditOutlined />} onClick={() => onEdit(item)}>
+              编辑
+            </Button>
+            <Button danger size="small" icon={<DeleteOutlined />} onClick={() => onBulkDelete([item.id])}>
+              删除
+            </Button>
+          </Space>
+        ),
+      },
+    ],
+    [categoryOptions, onBulkDelete, onEdit, onUpdateCategories],
+  );
+
+  return (
+    <Modal
+      className="manager-modal"
+      footer={(
+        <div className="manager-footer">
+          <Text type="secondary">{items.length} 项 · {formatBytes(totalSize)}</Text>
+          <Space wrap>
+            <Button
+              danger
+              disabled={selectedRowKeys.length === 0}
+              icon={<DeleteOutlined />}
+              loading={batchDeleting}
+              onClick={() => onBulkDelete(selectedRowKeys)}
+            >
+              删除选中
+            </Button>
+            <Button
+              danger
+              disabled={items.length === 0}
+              icon={<DeleteOutlined />}
+              loading={batchDeleting}
+              type="primary"
+              onClick={() => onBulkDelete([], { all: true })}
+            >
+              全部删除
+            </Button>
+          </Space>
+        </div>
+      )}
+      open={open}
+      title={(
+        <Space size={8}>
+          <TagsOutlined />
+          <span>文件管理</span>
+          <Tag>{selectedRowKeys.length} 已选</Tag>
+        </Space>
+      )}
+      width={1080}
+      onCancel={onClose}
+    >
+      <Table
+        columns={columns}
+        dataSource={items}
+        locale={{ emptyText: '暂无素材' }}
+        pagination={{ pageSize: 8, showSizeChanger: false }}
+        rowKey="id"
+        rowSelection={{ selectedRowKeys, onChange: onSelectionChange }}
+        scroll={{ x: 1280, y: 480 }}
+        size="small"
+      />
+    </Modal>
+  );
+}
+
+function ManagerPreview({ item }) {
+  const isText = item.type === 'text';
+  const isVideo = (item.mime || '').startsWith('video/');
+  const isAudio = (item.mime || '').startsWith('audio/');
+
+  if (isImageItem(item)) {
+    return (
+      <div className="manager-preview manager-preview-image">
+        <img loading="lazy" alt={item.fileName || item.title || 'image'} src={item.rawUrl} />
+      </div>
+    );
+  }
+
+  if (isText) {
+    return (
+      <pre className="manager-preview manager-preview-text">
+        {item.text || ''}
+      </pre>
+    );
+  }
+
+  if (isVideo) {
+    return (
+      <div className="manager-preview manager-preview-video">
+        <video muted preload="metadata" src={item.rawUrl} />
+        <VideoCameraOutlined />
+      </div>
+    );
+  }
+
+  if (isAudio) {
+    return (
+      <div className="manager-preview manager-preview-file">
+        <AudioOutlined />
+      </div>
+    );
+  }
+
+  return (
+    <div className="manager-preview manager-preview-file">
+      <span>{extensionOf(item.fileName)}</span>
+    </div>
+  );
+}
+
+function MaterialEditModal({
+  categoryOptions,
+  form,
+  item,
+  open,
+  saving,
+  onCancel,
+  onSave,
+}) {
+  const fillForm = useCallback(() => {
+    if (!item) return;
+    form.setFieldsValue({
+      title: item.title || item.fileName || '',
+      note: item.note || '',
+      categoryIds: itemCategoryIds(item),
+    });
+  }, [form, item]);
+
+  useEffect(() => {
+    if (open) fillForm();
+  }, [fillForm, open]);
+
+  return (
+    <Modal
+      forceRender
+      okText="保存"
+      open={open}
+      title="编辑素材"
+      confirmLoading={saving}
+      afterOpenChange={(visible) => {
+        if (visible) fillForm();
+      }}
+      onCancel={onCancel}
+      onOk={() => form.submit()}
+    >
+      <Form form={form} layout="vertical" onFinish={onSave}>
+        <Form.Item name="title" label="标题">
+          <Input placeholder={item?.fileName || '标题'} allowClear />
+        </Form.Item>
+        <Form.Item name="note" label="备注">
+          <Input.TextArea placeholder="备注" autoSize={{ minRows: 3, maxRows: 6 }} />
+        </Form.Item>
+        <Form.Item name="categoryIds" label="分类">
+          <CategorySelect options={categoryOptions} placeholder="选择分类" />
+        </Form.Item>
+      </Form>
+    </Modal>
   );
 }
 
@@ -787,12 +1578,22 @@ function ConnectionModal({ currentClientId, info, open, onClose }) {
   );
 }
 
-function MaterialCard({ item, onCopyImage, onCopyText, onDelete, onPreview }) {
+function MaterialCard({
+  categoryById,
+  item,
+  onCopyImage,
+  onCopyText,
+  onDelete,
+  onEdit,
+  onFilterCategory,
+  onPreview,
+}) {
   const isText = item.type === 'text';
   const isImage = isImageItem(item);
   const isVideo = (item.mime || '').startsWith('video/');
   const isAudio = (item.mime || '').startsWith('audio/');
   const canCopy = isText || isImage;
+  const categories = itemCategories(item, categoryById);
 
   const subtitle = [
     isText ? '文本' : item.fileName,
@@ -840,10 +1641,27 @@ function MaterialCard({ item, onCopyImage, onCopyText, onDelete, onPreview }) {
           <Button icon={<DownloadOutlined />} href={item.downloadUrl} download={item.fileName || `${item.title || 'text'}.txt`}>
             下载
           </Button>
+          <Button icon={<EditOutlined />} onClick={() => onEdit(item)}>
+            编辑
+          </Button>
           <Button danger icon={<DeleteOutlined />} onClick={() => onDelete(item)}>
             删除
           </Button>
         </div>
+        {categories.length > 0 ? (
+          <div className="item-tags">
+            {categories.map((category) => (
+              <Tag
+                key={category.id}
+                className="item-category-tag"
+                icon={<TagsOutlined />}
+                onClick={() => onFilterCategory(category.id)}
+              >
+                {category.name}
+              </Tag>
+            ))}
+          </div>
+        ) : null}
       </div>
     </Card>
   );
