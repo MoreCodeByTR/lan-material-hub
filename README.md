@@ -67,3 +67,18 @@ DATA_DIR=/Users/tianrui/Desktop/material-data lan-material-hub start
 ## 注意
 
 这个服务默认不做登录鉴权，适合可信局域网或临时自测网络使用。不要在公共 Wi-Fi 或公网端口暴露。
+
+## 发布
+
+GitHub Actions 会在发布 GitHub Release 或推送 `v*` tag 时自动执行 npm 发布。
+
+发布前需要在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中配置 `NPM_TOKEN`，值为 npm access token。
+
+推荐流程：
+
+```bash
+npm version patch
+git push origin main --follow-tags
+```
+
+也可以在 GitHub 上创建并发布一个 tag 形如 `v1.1.1` 的 Release。workflow 会校验 tag 版本必须和 `package.json` 中的 `version` 一致；如果该版本已经存在于 npm，会跳过重复发布。
