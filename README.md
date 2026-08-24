@@ -70,9 +70,9 @@ DATA_DIR=/Users/tianrui/Desktop/material-data lan-material-hub start
 
 ## 发布
 
-GitHub Actions 会在发布 GitHub Release 或推送 `v*` tag 时自动执行 npm 发布。
+GitHub Actions 会通过 npm Trusted Publishing 在发布 GitHub Release 或推送 `v*` tag 时自动执行 npm 发布。
 
-发布前需要在 GitHub 仓库的 `Settings -> Secrets and variables -> Actions` 中配置 `NPM_TOKEN`，值为 npm access token。
+发布前需要在 npm 包的 publishing 设置中添加 trusted publisher，指向这个 GitHub 仓库和 `.github/workflows/npm-publish.yml`。不需要配置 `NPM_TOKEN`。
 
 推荐流程：
 
