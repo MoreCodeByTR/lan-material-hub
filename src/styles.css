@@ -165,7 +165,7 @@ a {
 .panel-input-stack {
   display: grid;
   gap: 0;
-  margin-top: auto;
+  margin-top: 10px;
 }
 
 .hub-panel .ant-upload-wrapper,

@@ -1470,10 +1470,12 @@ function MaterialEditModal({
 
   return (
     <Modal
+      centered
       forceRender
       okText="保存"
       open={open}
       title="编辑素材"
+      zIndex={1200}
       confirmLoading={saving}
       afterOpenChange={(visible) => {
         if (visible) fillForm();
