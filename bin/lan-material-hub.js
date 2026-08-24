@@ -356,6 +356,7 @@ Usage:
   lan-material-hub start
   lan-material-hub stop
   lan-material-hub status
+  lan-material-hub --version
 
 Environment:
   PORT                  起始端口，默认 7788
@@ -364,6 +365,10 @@ Environment:
   DATA_DIR              素材保存目录
   LAN_MATERIAL_HUB_NICKNAME 站点昵称
   LAN_MATERIAL_HUB_HOME PID、日志和默认素材目录`);
+}
+
+function printVersion() {
+  console.log(packageJson.version || '0.0.0');
 }
 
 function readPidInfo() {
@@ -584,6 +589,8 @@ async function main() {
     await stop();
   } else if (command === 'status') {
     await status();
+  } else if ((command === '--version' || command === '-v') && args.length === 0) {
+    printVersion();
   } else {
     usage();
     process.exit(command ? 1 : 0);

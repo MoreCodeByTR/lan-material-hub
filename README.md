@@ -33,6 +33,7 @@ lan-material-hub start
 ```bash
 lan-material-hub status
 lan-material-hub stop
+lan-material-hub --version
 ```
 
 通过 `lan-material-hub start` 启动时，素材默认保存在 `~/.lan-material-hub/data`，更新 npm 包不会清除这里的数据。
