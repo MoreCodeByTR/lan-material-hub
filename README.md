@@ -70,7 +70,7 @@ DATA_DIR=/Users/tianrui/Desktop/material-data lan-material-hub start
 
 ## 发布
 
-GitHub Actions 会通过 npm Trusted Publishing 在发布 GitHub Release 或推送 `v*` tag 时自动执行 npm 发布。
+GitHub Actions 会通过 npm Trusted Publishing 在发布 GitHub Release 时自动执行 npm 发布。
 
 发布前需要在 npm 包的 publishing 设置中添加 trusted publisher，指向这个 GitHub 仓库和 `.github/workflows/npm-publish.yml`。不需要配置 `NPM_TOKEN`。
 
@@ -78,7 +78,7 @@ GitHub Actions 会通过 npm Trusted Publishing 在发布 GitHub Release 或推�
 
 ```bash
 npm version patch
-git push origin main --follow-tags
+git push origin main
 ```
 
-也可以在 GitHub 上创建并发布一个 tag 形如 `v1.1.1` 的 Release。workflow 会校验 tag 版本必须和 `package.json` 中的 `version` 一致；如果该版本已经存在于 npm，会跳过重复发布。
+然后在 GitHub 上创建并发布一个 tag 形如 `v1.1.1` 的 Release。仅推送 tag 不会触发 npm 发布。
